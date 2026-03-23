@@ -16,6 +16,7 @@ export interface Product {
   image_url: string | null
   rating: number | null
   review_count: number | null
+  is_mock: boolean
 }
 
 export interface SearchResponse {
@@ -72,11 +73,13 @@ export interface DiscoverTrendEntry {
   timeline: TrendPoint[]
   products: Product[]
   avg_interest: number
+  trends_available: boolean
 }
 
 export interface DiscoverResponse {
   timeframe: string
   trends: DiscoverTrendEntry[]
+  trends_available: boolean
   error?: string
 }
 

@@ -25,7 +25,6 @@ export default function DiscoverPage() {
     setExpanded({})
     try {
       const res = await discoverTrends(timeframe, limit)
-      if (res.error) setError(`오류: ${res.error}`)
       setData(res)
     } catch {
       setError('트렌드 발굴 중 오류가 발생했습니다.')
@@ -115,6 +114,13 @@ export default function DiscoverPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {data && !loading && !data.trends_available && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 rounded-lg px-4 py-3 text-sm mb-4 flex items-center gap-2">
+          <span>⚠️</span>
+          <span>Google Trends API가 일시적으로 제한되어 인기 키워드 기준으로 상품을 표시합니다. 트렌드 차트는 나중에 다시 시도해보세요.</span>
         </div>
       )}
 

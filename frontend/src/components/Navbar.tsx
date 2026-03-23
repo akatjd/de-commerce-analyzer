@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 
 const links = [
+  { to: '/sourcing', label: '🇩🇪 독일 소싱' },
   { to: '/discover', label: '트렌드 발굴' },
   { to: '/search', label: '상품 검색' },
   { to: '/trends', label: '트렌드 분석' },

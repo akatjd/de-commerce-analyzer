@@ -2,6 +2,22 @@ import time
 from pytrends.request import TrendReq
 from typing import List
 
+# 인메모리 캐시 (키: (keyword, timeframe), TTL: 6시간)
+_cache: dict = {}
+_CACHE_TTL = 6 * 3600
+
+
+def _cache_get(key: tuple):
+    if key in _cache:
+        data, ts = _cache[key]
+        if time.time() - ts < _CACHE_TTL:
+            return data
+    return None
+
+
+def _cache_set(key: tuple, data):
+    _cache[key] = (data, time.time())
+
 
 TIMEFRAME_OPTIONS = {
     "1w": "now 7-d",
@@ -13,6 +29,11 @@ TIMEFRAME_OPTIONS = {
 
 
 def get_trends(keyword: str, timeframe: str = "3m") -> dict:
+    cache_key = ("trends", keyword, timeframe)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
     tf = TIMEFRAME_OPTIONS.get(timeframe, "today 3-m")
     try:
         pytrends = TrendReq(hl="ko", tz=540)
@@ -39,13 +60,15 @@ def get_trends(keyword: str, timeframe: str = "3m") -> dict:
             if rising_df is not None and not rising_df.empty:
                 related_rising = rising_df.head(10).to_dict("records")
 
-        return {
+        result = {
             "keyword": keyword,
             "timeframe": timeframe,
             "timeline": timeline,
             "related_top": related_top,
             "related_rising": related_rising,
         }
+        _cache_set(cache_key, result)
+        return result
     except Exception as e:
         return {
             "keyword": keyword,
@@ -71,52 +94,71 @@ CANDIDATE_KEYWORDS = [
 async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6) -> dict:
     from app.services.scraper_service import search_products
 
+    cache_key = ("discover", timeframe, limit)
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
     tf = TIMEFRAME_OPTIONS.get(timeframe, "today 3-m")
 
-    # 후보 키워드를 5개씩 배치로 나눠 관심도 조회
     keyword_scores: dict[str, float] = {}
-    batches = [CANDIDATE_KEYWORDS[i:i+5] for i in range(0, len(CANDIDATE_KEYWORDS), 5)]
+    timelines: dict[str, list] = {}
+    trends_available = False
 
-    for batch in batches:
+    # API 호출 최소화: 5개씩 최대 2번만 시도
+    # pytrends는 한 번에 최대 5개 비교 가능
+    for batch_start in range(0, min(10, len(CANDIDATE_KEYWORDS)), 5):
+        batch = CANDIDATE_KEYWORDS[batch_start:batch_start + 5]
         try:
-            time.sleep(0.3)
+            time.sleep(1.0)
             pt = TrendReq(hl="ko", tz=540)
             pt.build_payload(batch, timeframe=tf, geo="KR")
             df = pt.interest_over_time()
             if not df.empty:
+                trends_available = True
                 for kw in batch:
                     if kw in df.columns:
-                        keyword_scores[kw] = float(df[kw].mean())
-        except Exception:
-            # 배치 실패 시 해당 배치 건너뜀
-            for kw in batch:
-                keyword_scores.setdefault(kw, 0.0)
-
-    # 관심도 높은 순으로 정렬 → 상위 limit개
-    top_keywords = sorted(keyword_scores, key=lambda k: keyword_scores[k], reverse=True)[:limit]
-
-    # 각 키워드별 타임라인 + 상품 조회
-    results = []
-    for kw in top_keywords:
-        entry: dict = {"keyword": kw, "timeline": [], "products": [], "avg_interest": round(keyword_scores.get(kw, 0), 1)}
-        try:
-            time.sleep(0.3)
-            pt2 = TrendReq(hl="ko", tz=540)
-            pt2.build_payload([kw], timeframe=tf, geo="KR")
-            interest_df = pt2.interest_over_time()
-            if not interest_df.empty and kw in interest_df.columns:
-                entry["timeline"] = [
-                    {"date": d.strftime("%Y-%m-%d"), "value": int(row[kw])}
-                    for d, row in interest_df.iterrows()
-                ]
+                        avg = float(df[kw].mean())
+                        keyword_scores[kw] = avg
+                        timelines[kw] = [
+                            {"date": d.strftime("%Y-%m-%d"), "value": int(row[kw])}
+                            for d, row in df.iterrows()
+                        ]
         except Exception:
             pass
 
-        products = await search_products(kw, 4)
-        entry["products"] = [p.model_dump() for p in products]
-        results.append(entry)
+    # Trends API 실패 시: 사전 정의 순위 사용 (index 낮을수록 인기)
+    if not trends_available:
+        for i, kw in enumerate(CANDIDATE_KEYWORDS):
+            keyword_scores[kw] = float(len(CANDIDATE_KEYWORDS) - i)
 
-    return {"timeframe": timeframe, "trends": results}
+    # 점수 기준 정렬 후 limit개 선택
+    ranked = sorted(keyword_scores, key=lambda k: keyword_scores[k], reverse=True)[:limit]
+
+    # 부족하면 나머지 후보로 채우기
+    for kw in CANDIDATE_KEYWORDS:
+        if len(ranked) >= limit:
+            break
+        if kw not in ranked:
+            ranked.append(kw)
+            keyword_scores.setdefault(kw, 0.0)
+
+    results = []
+    for kw in ranked:
+        products = await search_products(kw, 4)
+        results.append({
+            "keyword": kw,
+            "timeline": timelines.get(kw, []),
+            "products": [p.model_dump() for p in products],
+            "avg_interest": round(keyword_scores.get(kw, 0), 1),
+            "trends_available": trends_available,
+        })
+
+    result = {"timeframe": timeframe, "trends": results, "trends_available": trends_available}
+    # 실제 Trends 데이터를 가져왔을 때만 캐시 (폴백은 캐시 안 함)
+    if trends_available:
+        _cache_set(cache_key, result)
+    return result
 
 
 def get_trends_comparison(keywords: List[str], timeframe: str = "3m") -> dict:

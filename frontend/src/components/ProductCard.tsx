@@ -29,9 +29,14 @@ export default function ProductCard({ product }: Props) {
           <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}`}>
             {product.source}
           </span>
-          {product.discount_rate && (
-            <span className="text-xs font-bold text-red-500">{product.discount_rate}% OFF</span>
-          )}
+          <div className="flex items-center gap-1">
+            {product.is_mock && (
+              <span className="text-xs text-gray-400 border border-gray-200 px-1.5 py-0.5 rounded">샘플</span>
+            )}
+            {product.discount_rate && (
+              <span className="text-xs font-bold text-red-500">{product.discount_rate}% OFF</span>
+            )}
+          </div>
         </div>
 
         <p className="text-sm text-gray-800 font-medium line-clamp-2 leading-snug">{product.name}</p>
