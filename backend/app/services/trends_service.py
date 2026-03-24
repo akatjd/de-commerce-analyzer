@@ -28,16 +28,17 @@ TIMEFRAME_OPTIONS = {
 }
 
 
-def get_trends(keyword: str, timeframe: str = "3m") -> dict:
-    cache_key = ("trends", keyword, timeframe)
+def get_trends(keyword: str, timeframe: str = "3m", geo: str = "KR") -> dict:
+    cache_key = ("trends", keyword, timeframe, geo)
     cached = _cache_get(cache_key)
     if cached:
         return cached
 
     tf = TIMEFRAME_OPTIONS.get(timeframe, "today 3-m")
+    cfg = GEO_CONFIG.get(geo, GEO_CONFIG["KR"])
     try:
-        pytrends = TrendReq(hl="ko", tz=540)
-        pytrends.build_payload([keyword], timeframe=tf, geo="KR")
+        pytrends = TrendReq(hl=cfg["hl"], tz=cfg["tz"])
+        pytrends.build_payload([keyword], timeframe=tf, geo=geo)
 
         interest_df = pytrends.interest_over_time()
         related_queries = pytrends.related_queries()
@@ -63,6 +64,7 @@ def get_trends(keyword: str, timeframe: str = "3m") -> dict:
         result = {
             "keyword": keyword,
             "timeframe": timeframe,
+            "geo": geo,
             "timeline": timeline,
             "related_top": related_top,
             "related_rising": related_rising,
@@ -73,6 +75,7 @@ def get_trends(keyword: str, timeframe: str = "3m") -> dict:
         return {
             "keyword": keyword,
             "timeframe": timeframe,
+            "geo": geo,
             "timeline": [],
             "related_top": [],
             "related_rising": [],
@@ -90,16 +93,39 @@ CANDIDATE_KEYWORDS = [
     "캠핑", "텀블러", "백팩", "여행가방", "호텔",
 ]
 
+# 독일 Google Trends 후보 키워드 (카테고리별 독일어/브랜드명)
+GERMAN_CANDIDATE_KEYWORDS = [
+    # 전자기기
+    "Laptop", "Kopfhörer", "Smartwatch", "Tablet", "Smartphone",
+    # 가전
+    "Kaffeemaschine", "Staubsauger", "Miele", "Bosch Haushaltsgeräte", "Airfryer",
+    # 패션·스포츠
+    "Adidas", "Sneaker", "Laufschuhe", "Jack Wolfskin", "Fahrrad",
+    # 건강·뷰티
+    "Nahrungsergänzungsmittel", "Protein Pulver", "Eucerin", "Nivea", "Vitamine",
+    # 주방·공구
+    "WMF", "Zwilling", "Bosch Werkzeug", "Knipex", "Thermomix",
+    # 아웃도어·캠핑
+    "Zelt", "Schlafsack", "Wanderschuhe", "Deuter Rucksack", "Camping",
+]
 
-async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6) -> dict:
+GEO_CONFIG = {
+    "KR": {"hl": "ko", "tz": 540, "keywords": CANDIDATE_KEYWORDS},
+    "DE": {"hl": "de", "tz": 60,  "keywords": GERMAN_CANDIDATE_KEYWORDS},
+}
+
+
+async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6, geo: str = "KR") -> dict:
     from app.services.scraper_service import search_products
 
-    cache_key = ("discover", timeframe, limit)
+    cache_key = ("discover", timeframe, limit, geo)
     cached = _cache_get(cache_key)
     if cached:
         return cached
 
     tf = TIMEFRAME_OPTIONS.get(timeframe, "today 3-m")
+    cfg = GEO_CONFIG.get(geo, GEO_CONFIG["KR"])
+    candidate_keywords = cfg["keywords"]
 
     keyword_scores: dict[str, float] = {}
     timelines: dict[str, list] = {}
@@ -107,12 +133,12 @@ async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6) 
 
     # API 호출 최소화: 5개씩 최대 2번만 시도
     # pytrends는 한 번에 최대 5개 비교 가능
-    for batch_start in range(0, min(10, len(CANDIDATE_KEYWORDS)), 5):
-        batch = CANDIDATE_KEYWORDS[batch_start:batch_start + 5]
+    for batch_start in range(0, min(10, len(candidate_keywords)), 5):
+        batch = candidate_keywords[batch_start:batch_start + 5]
         try:
             time.sleep(1.0)
-            pt = TrendReq(hl="ko", tz=540)
-            pt.build_payload(batch, timeframe=tf, geo="KR")
+            pt = TrendReq(hl=cfg["hl"], tz=cfg["tz"])
+            pt.build_payload(batch, timeframe=tf, geo=geo)
             df = pt.interest_over_time()
             if not df.empty:
                 trends_available = True
@@ -129,14 +155,14 @@ async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6) 
 
     # Trends API 실패 시: 사전 정의 순위 사용 (index 낮을수록 인기)
     if not trends_available:
-        for i, kw in enumerate(CANDIDATE_KEYWORDS):
-            keyword_scores[kw] = float(len(CANDIDATE_KEYWORDS) - i)
+        for i, kw in enumerate(candidate_keywords):
+            keyword_scores[kw] = float(len(candidate_keywords) - i)
 
     # 점수 기준 정렬 후 limit개 선택
     ranked = sorted(keyword_scores, key=lambda k: keyword_scores[k], reverse=True)[:limit]
 
     # 부족하면 나머지 후보로 채우기
-    for kw in CANDIDATE_KEYWORDS:
+    for kw in candidate_keywords:
         if len(ranked) >= limit:
             break
         if kw not in ranked:
@@ -154,19 +180,20 @@ async def get_top_trending_with_products(timeframe: str = "3m", limit: int = 6) 
             "trends_available": trends_available,
         })
 
-    result = {"timeframe": timeframe, "trends": results, "trends_available": trends_available}
+    result = {"timeframe": timeframe, "geo": geo, "trends": results, "trends_available": trends_available}
     # 실제 Trends 데이터를 가져왔을 때만 캐시 (폴백은 캐시 안 함)
     if trends_available:
         _cache_set(cache_key, result)
     return result
 
 
-def get_trends_comparison(keywords: List[str], timeframe: str = "3m") -> dict:
+def get_trends_comparison(keywords: List[str], timeframe: str = "3m", geo: str = "KR") -> dict:
     tf = TIMEFRAME_OPTIONS.get(timeframe, "today 3-m")
     keywords = keywords[:5]
+    cfg = GEO_CONFIG.get(geo, GEO_CONFIG["KR"])
     try:
-        pytrends = TrendReq(hl="ko", tz=540)
-        pytrends.build_payload(keywords, timeframe=tf, geo="KR")
+        pytrends = TrendReq(hl=cfg["hl"], tz=cfg["tz"])
+        pytrends.build_payload(keywords, timeframe=tf, geo=geo)
 
         interest_df = pytrends.interest_over_time()
 
@@ -184,12 +211,14 @@ def get_trends_comparison(keywords: List[str], timeframe: str = "3m") -> dict:
         return {
             "keywords": keywords,
             "timeframe": timeframe,
+            "geo": geo,
             "timeline": timeline,
         }
     except Exception as e:
         return {
             "keywords": keywords,
             "timeframe": timeframe,
+            "geo": geo,
             "timeline": [],
             "error": str(e),
         }
